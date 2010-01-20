@@ -25,7 +25,7 @@ typedef FileData = {
 	var bytes : Float;
 	var time : Float;
 	var lock : neko.vm.Mutex;
-	var api : ModToraApi;
+	var api : UberToraContext;
 }
 
 class UberTora 
@@ -96,7 +96,8 @@ class UberTora
 	
 	private function init( nthreads : Int ) 
 	{
-		neko.Sys.putEnv("MOD_NEKO","1");
+		neko.Sys.putEnv("MOD_NEKO", "1");
+		neko.Sys.putEnv("MOD_UBERTORA","1");
 		redirect = neko.Lib.load("std","print_redirect",1);
 		set_trusted = neko.Lib.load("std","set_trusted",1);
 		enable_jit = neko.Lib.load("std","enable_jit",1);
@@ -234,6 +235,7 @@ class UberTora
 		while ( true ) 
 		{
 			var client = clientQueue.pop(true);
+			
 			if( client == null ) {
 				continue;
 			}
@@ -281,7 +283,7 @@ class UberTora
 						loads : 0,
 						cacheHits : 0,
 						notify : 0,
-						api: new ModToraApi(),
+						api: new UberToraContext(),
 						lock : new neko.vm.Mutex(),
 						bytes : 0.,
 						time : 0.,
@@ -292,17 +294,21 @@ class UberTora
 			}
 			
 			// check if up-to-date cache is available
+			var loaded:Bool = false;
+			
 			f.lock.acquire();
 			
 			f.api.client = client;
 			redirect(f.api.print);
 			
 			var time = getFileTime(client.file);
-			if ( time != f.filetime || f.api.main == null) 
+			if ( time != f.filetime || (f.api.main == null && f.api.requestHandler == null) ) 
 			{
 				f.loads++;
 				f.filetime = time;
+				log("loading app:"+client.file);
 				initLoader(f.api).loadModule(client.file);
+				loaded = true;
 			}
 			else
 				f.cacheHits++;
@@ -312,7 +318,7 @@ class UberTora
 			var data = "";
 			try 
 			{
-				if(f.api.main != null)
+				if(f.api.main != null && !loaded)
 					f.api.main();
 			}
 			catch ( e : Dynamic ) 
@@ -321,15 +327,32 @@ class UberTora
 				data = try Std.string(e) + haxe.Stack.toString(haxe.Stack.exceptionStack()) catch( _ : Dynamic ) "??? TORA Error";
 			}
 			
+			redirect(null);
+			f.api.client = null;
+			
 			f.lock.release();
+			
+			try
+			{
+				if (f.api.requestHandler != null && !loaded)
+					f.api.requestHandler(new ClientRequestContext(client));
+			}
+			catch ( e: Dynamic)
+			{
+				code = CError;
+				data = try Std.string(e) + haxe.Stack.toString(haxe.Stack.exceptionStack()) catch( _ : Dynamic ) "??? TORA Error";
+			}
 			
 			// send result
 			try 
 			{
 				client.sendHeaders(); // if no data has been printed
 				client.sock.setFastSend(true);
-				client.sendMessage(code,data);
-			} catch( e : Dynamic ) {
+				client.sendMessage(code, data);
+				client.sock.close();
+			} 
+			catch ( e : Dynamic ) 
+			{
 				if( client.secure ) log("Error while sending answer ("+Std.string(e)+")");
 				t.errors++;
 			}
@@ -338,13 +361,8 @@ class UberTora
 			f.lock.acquire();
 			f.time += haxe.Timer.stamp() - t.time;
 			f.bytes += client.dataBytes;
-			f.api.client = null;
-			f.lock.release();
-			
-			// cleanup
-			redirect(null);
 			t.client = null;
-			client.sock.close();
+			f.lock.release();
 		}
 	}
 	
