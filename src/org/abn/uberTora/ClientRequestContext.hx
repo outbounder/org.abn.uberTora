@@ -62,7 +62,7 @@ class ClientRequestContext
 		return makeTable(client.params);
 	}
 
-	public function cgi_get_cwd():String {
+	public function get_cwd():String {
 		var path = client.file.split("/");
 		if( path.length > 0 )
 			path.pop();
